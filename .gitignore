@@ -1,0 +1,6 @@
+
+__pycache__/
+*.pyc
+outputs/chunks/
+outputs/chunks_v*/
+outputs/final_chunks/
