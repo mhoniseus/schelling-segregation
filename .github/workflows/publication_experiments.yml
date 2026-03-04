@@ -1,0 +1,55 @@
+name: Publication Experiments (Cascade + Radius-2)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cascade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy scipy matplotlib
+
+      - name: Run cascade experiment
+        run: python benchmarking/cascade_experiment.py
+
+      - name: Upload cascade results
+        uses: actions/upload-artifact@v4
+        with:
+          name: cascade-results
+          path: outputs/data/cascade_results.npz
+          retention-days: 30
+
+  radius2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy scipy matplotlib
+
+      - name: Run radius-2 experiment
+        run: python benchmarking/radius2_experiment.py
+
+      - name: Upload radius-2 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: radius2-results
+          path: outputs/data/radius2_results.npz
+          retention-days: 30
