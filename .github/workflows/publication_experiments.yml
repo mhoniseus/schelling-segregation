@@ -29,9 +29,9 @@ jobs:
           path: outputs/data/cascade_results.npz
           retention-days: 30
 
-  radius2:
+  radius2-sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -44,10 +44,122 @@ jobs:
       - name: Install dependencies
         run: pip install numpy scipy matplotlib
 
-      - name: Run radius-2 experiment
-        run: python benchmarking/radius2_experiment.py
+      - name: Run S(T) sweep for both radii
+        run: python benchmarking/radius2_experiment.py --sweep-only
 
-      - name: Upload radius-2 results
+      - name: Upload sweep results
+        uses: actions/upload-artifact@v4
+        with:
+          name: radius2-sweep
+          path: outputs/data/radius2_sweep.npz
+          retention-days: 30
+
+  radius2-fss:
+    needs: radius2-sweep
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - L: 20
+            timeout: 60
+          - L: 40
+            timeout: 60
+          - L: 80
+            timeout: 60
+          - L: 160
+            timeout: 120
+          - L: 320
+            timeout: 240
+
+    timeout-minutes: ${{ matrix.timeout }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy scipy matplotlib
+
+      - name: Download sweep results
+        uses: actions/download-artifact@v4
+        with:
+          name: radius2-sweep
+          path: outputs/data
+
+      - name: Run FSS for L=${{ matrix.L }}
+        run: python benchmarking/radius2_experiment.py --fss-L ${{ matrix.L }}
+
+      - name: Upload FSS partial results
+        uses: actions/upload-artifact@v4
+        with:
+          name: radius2-fss-L${{ matrix.L }}
+          path: outputs/data/radius2_fss_L${{ matrix.L }}.npz
+          retention-days: 30
+
+  radius2-merge:
+    needs: radius2-fss
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy
+
+      - name: Download sweep results
+        uses: actions/download-artifact@v4
+        with:
+          name: radius2-sweep
+          path: outputs/data
+
+      - name: Download all FSS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: radius2-fss-L*
+          path: outputs/data
+          merge-multiple: true
+
+      - name: Merge results
+        run: |
+          python -c "
+          import numpy as np, glob
+
+          sweep = dict(np.load('outputs/data/radius2_sweep.npz'))
+          results = dict(sweep)
+
+          L_FSS = [20, 40, 80, 160, 320]
+          for label in ['R1', 'R2']:
+              variances = []
+              for L in L_FSS:
+                  fss = np.load(f'outputs/data/radius2_fss_L{L}.npz')
+                  variances.append(float(fss[f'var_{label}_L{L}']))
+              log_L = np.log(np.array(L_FSS, dtype=float))
+              log_V = np.log(np.array(variances) + 1e-15)
+              alpha, _ = np.polyfit(log_L, log_V, 1)
+              results[f'var_{label}'] = np.array(variances)
+              results[f'alpha_{label}'] = alpha
+              print(f'{label}: alpha = {alpha:.3f}')
+
+          results['L_fss'] = np.array(L_FSS)
+          results['F8_size'] = 9
+          results['F24_size'] = 73
+          np.savez('outputs/data/radius2_results.npz', **results)
+          print('Saved merged radius2_results.npz')
+          "
+
+      - name: Upload merged results
         uses: actions/upload-artifact@v4
         with:
           name: radius2-results

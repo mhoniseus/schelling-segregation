@@ -4,10 +4,15 @@ Radius-2 neighborhood Schelling model experiment.
 Tests whether the finer satisfaction spectrum F_24 (radius-2, 24 neighbors)
 produces more critical-like FSS behavior than F_8 (radius-1, 8 neighbors).
 
-Usage: python benchmarking/radius2_experiment.py
-Output: outputs/data/radius2_results.npz
+Usage:
+  python benchmarking/radius2_experiment.py            # full sweep + all FSS sizes
+  python benchmarking/radius2_experiment.py --fss-L 160  # FSS for L=160 only (no sweep)
+
+Output: outputs/data/radius2_results.npz  (full run)
+        outputs/data/radius2_fss_L{L}.npz (single-L run)
 """
 
+import argparse
 import numpy as np
 import sys, os, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -26,8 +31,8 @@ T_SWEEP = np.arange(0.10, 0.91, 0.01)
 L_SWEEP = 40
 
 # FSS parameters
-L_FSS = [20, 40, 80]
-N_TRIALS_FSS = 30
+L_FSS = [20, 40, 80, 160, 320]
+N_TRIALS_FSS = 50
 
 
 # ── Neighborhood offsets ────────────────────────────────────────────
@@ -131,7 +136,39 @@ def segregation_index(grid, offsets, f_A=F_A):
     return max(0.0, (mean_sat - expected) / (1.0 - expected))
 
 
+def run_fss_single_L(L, Tc_R1, Tc_R2):
+    """Run FSS variance computation for a single lattice size L."""
+    os.makedirs('outputs/data', exist_ok=True)
+    partial = {}
+
+    for label, offsets, Tc in [("R1", OFFSETS_R1, Tc_R1), ("R2", OFFSETS_R2, Tc_R2)]:
+        T_fss = round(Tc * 100) / 100
+        print(f"\nFSS variance scaling {label} at T={T_fss:.2f}, L={L}...")
+
+        t0 = time.time()
+        segs = []
+        for trial in range(N_TRIALS_FSS):
+            rng = np.random.default_rng(SEED + trial + 77777)
+            grid = run_model(L, RHO, F_A, T_fss, offsets, rng)
+            segs.append(segregation_index(grid, offsets))
+        v = np.var(segs)
+        partial[f"var_{label}_L{L}"] = v
+        print(f"  L={L}: Var(S)={v:.6f} ({time.time()-t0:.0f}s)")
+
+    partial['L'] = L
+    outpath = f'outputs/data/radius2_fss_L{L}.npz'
+    np.savez(outpath, **partial)
+    print(f"Saved {outpath}")
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Radius-2 Schelling experiment")
+    parser.add_argument('--fss-L', type=int, default=None,
+                        help='Run FSS for a single lattice size L (requires sweep results)')
+    parser.add_argument('--sweep-only', action='store_true',
+                        help='Run only the S(T) sweep and save Tc values')
+    args = parser.parse_args()
+
     os.makedirs('outputs/data', exist_ok=True)
 
     F8 = satisfaction_spectrum(8)
@@ -139,6 +176,19 @@ def main():
     print(f"|F_8|  = {len(F8)}")
     print(f"|F_24| = {len(F24)}")
 
+    # ── Single-L FSS mode (for CI parallelization) ─────────────────
+    if args.fss_L is not None:
+        L = args.fss_L
+        assert L in L_FSS, f"L={L} not in L_FSS={L_FSS}"
+        # Load Tc values from the sweep results
+        sweep = np.load('outputs/data/radius2_sweep.npz')
+        Tc_R1 = float(sweep['Tc_R1'])
+        Tc_R2 = float(sweep['Tc_R2'])
+        print(f"Loaded Tc: R1={Tc_R1:.3f}, R2={Tc_R2:.3f}")
+        run_fss_single_L(L, Tc_R1, Tc_R2)
+        return
+
+    # ── Full run (backward-compatible) ─────────────────────────────
     results = {}
 
     # ── Sweep S(T) for both radii ──────────────────────────────────
@@ -167,6 +217,22 @@ def main():
         Tc = (T_SWEEP[idx] + T_SWEEP[idx + 1]) / 2
         results[f"Tc_{label}"] = Tc
         print(f"T_c ({label}) = {Tc:.3f}")
+
+    # Always save sweep data (used by --fss-L in CI)
+    sweep_data = {
+        'T_sweep': T_SWEEP,
+        'Tc_R1': results['Tc_R1'],
+        'Tc_R2': results['Tc_R2'],
+        'seg_mean_R1': results['seg_mean_R1'],
+        'seg_std_R1': results['seg_std_R1'],
+        'seg_mean_R2': results['seg_mean_R2'],
+        'seg_std_R2': results['seg_std_R2'],
+    }
+    np.savez('outputs/data/radius2_sweep.npz', **sweep_data)
+    print("Saved outputs/data/radius2_sweep.npz")
+
+    if args.sweep_only:
+        return
 
     # ── FSS variance scaling for both radii ────────────────────────
     for label, offsets in [("R1", OFFSETS_R1), ("R2", OFFSETS_R2)]:
