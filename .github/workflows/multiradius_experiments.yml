@@ -1,0 +1,81 @@
+name: Multi-Radius Experiments (r=1-6)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  multiradius-fss:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - radius: 1
+            timeout: 60
+          - radius: 2
+            timeout: 60
+          - radius: 3
+            timeout: 90
+          - radius: 4
+            timeout: 90
+          - radius: 5
+            timeout: 120
+          - radius: 6
+            timeout: 120
+
+    timeout-minutes: ${{ matrix.timeout }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy scipy matplotlib joblib
+
+      - name: Run multiradius experiment (r=${{ matrix.radius }})
+        run: python benchmarking/multiradius_experiment.py --radius ${{ matrix.radius }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiradius-R${{ matrix.radius }}
+          path: outputs/data/multiradius_R${{ matrix.radius }}.npz
+          retention-days: 30
+
+  multiradius-merge:
+    needs: multiradius-fss
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy scipy
+
+      - name: Download all multiradius artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: multiradius-R*
+          path: outputs/data
+          merge-multiple: true
+
+      - name: Merge results
+        run: python benchmarking/merge_multiradius.py --data-dir outputs/data
+
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiradius-combined
+          path: outputs/data/multiradius_combined.npz
+          retention-days: 30
