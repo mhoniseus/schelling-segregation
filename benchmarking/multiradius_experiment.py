@@ -25,16 +25,25 @@ F_A = 0.5
 MAX_STEPS = 500
 SEED = 42
 
-# Sweep parameters
-N_T_SWEEP = 30
-T_MIN, T_MAX = 0.10, 0.70
+# Sweep parameters (coarse pass)
+N_T_SWEEP = 60
+T_MIN, T_MAX = 0.10, 0.80
 T_SWEEP = np.linspace(T_MIN, T_MAX, N_T_SWEEP)
 L_SWEEP = 40
 N_TRIALS_SWEEP = 30
 
+# Fine sweep around T_c (second pass)
+N_T_FINE = 40
+T_FINE_HALFWIDTH = 0.05
+N_TRIALS_FINE = 50
+
 # FSS parameters
-L_FSS = [20, 40, 80]
 N_TRIALS_FSS = 50
+
+# Minimum L per radius: L must be > 4*radius to avoid periodic wrapping artifacts
+def get_L_fss(radius):
+    min_L = max(20, 4 * radius + 4)
+    return [L for L in [20, 40, 80] if L >= min_L]
 
 
 # ── Neighborhood offsets ────────────────────────────────────────────
@@ -168,8 +177,8 @@ def run_radius(radius):
     print(f"RADIUS {radius}: k={k} neighbors, |F_k|={F_k_size}")
     print(f"{'='*60}")
 
-    # ── S(T) sweep ──────────────────────────────────────────────
-    print(f"\nSweeping S(T) at L={L_SWEEP}, {N_TRIALS_SWEEP} trials, {N_T_SWEEP} T-values...")
+    # ── Coarse S(T) sweep ─────────────────────────────────────────
+    print(f"\nCoarse sweep S(T) at L={L_SWEEP}, {N_TRIALS_SWEEP} trials, {N_T_SWEEP} T-values...")
     t0 = time.time()
 
     seg_means = []
@@ -183,20 +192,42 @@ def run_radius(radius):
 
     seg_means = np.array(seg_means)
     seg_stds = np.array(seg_stds)
-    print(f"  Sweep done in {time.time()-t0:.0f}s")
+    print(f"  Coarse sweep done in {time.time()-t0:.0f}s")
 
-    # ── Find T_c via max |dS/dT| ───────────────────────────────
+    # ── Coarse T_c via max |dS/dT| ────────────────────────────
     dS = np.diff(seg_means) / np.diff(T_SWEEP)
     idx = np.argmax(dS)
-    T_c = (T_SWEEP[idx] + T_SWEEP[idx + 1]) / 2
-    print(f"  T_c = {T_c:.4f}")
+    T_c_coarse = (T_SWEEP[idx] + T_SWEEP[idx + 1]) / 2
+    print(f"  Coarse T_c = {T_c_coarse:.4f}")
+
+    # ── Fine sweep around T_c ──────────────────────────────────
+    T_fine_lo = max(T_MIN, T_c_coarse - T_FINE_HALFWIDTH)
+    T_fine_hi = min(T_MAX, T_c_coarse + T_FINE_HALFWIDTH)
+    T_FINE_SWEEP = np.linspace(T_fine_lo, T_fine_hi, N_T_FINE)
+    print(f"\nFine sweep [{T_fine_lo:.3f}, {T_fine_hi:.3f}], {N_T_FINE} points, {N_TRIALS_FINE} trials...")
+    t0 = time.time()
+
+    fine_means = []
+    for T in T_FINE_SWEEP:
+        segs = Parallel(n_jobs=-1)(
+            delayed(_sweep_trial)(T, offsets, trial, L_SWEEP) for trial in range(N_TRIALS_FINE)
+        )
+        fine_means.append(np.mean(segs))
+
+    fine_means = np.array(fine_means)
+    dS_fine = np.diff(fine_means) / np.diff(T_FINE_SWEEP)
+    idx_fine = np.argmax(dS_fine)
+    T_c = (T_FINE_SWEEP[idx_fine] + T_FINE_SWEEP[idx_fine + 1]) / 2
+    print(f"  Fine sweep done in {time.time()-t0:.0f}s")
+    print(f"  T_c (refined) = {T_c:.5f}")
 
     # ── FSS variance scaling ────────────────────────────────────
-    T_fss = round(T_c * 100) / 100
-    print(f"\nFSS variance scaling at T={T_fss:.2f}, L={L_FSS}...")
+    L_fss = get_L_fss(radius)
+    T_fss = round(T_c * 1000) / 1000  # round to 3 decimals for precision
+    print(f"\nFSS variance scaling at T={T_fss:.3f}, L={L_fss}...")
 
     variances = []
-    for L in L_FSS:
+    for L in L_fss:
         t1 = time.time()
         segs = Parallel(n_jobs=-1)(
             delayed(_fss_trial)(L, T_fss, offsets, trial) for trial in range(N_TRIALS_FSS)
@@ -206,7 +237,7 @@ def run_radius(radius):
         print(f"  L={L}: Var(S)={v:.6f} ({time.time()-t1:.0f}s)")
 
     # ── Fit alpha ───────────────────────────────────────────────
-    log_L = np.log(np.array(L_FSS, dtype=float))
+    log_L = np.log(np.array(L_fss, dtype=float))
     log_V = np.log(np.array(variances) + 1e-15)
     alpha, _ = np.polyfit(log_L, log_V, 1)
     print(f"  alpha = {alpha:.4f}")
@@ -220,7 +251,7 @@ def run_radius(radius):
              T_c=T_c,
              variances=np.array(variances),
              alpha=alpha,
-             L_fss=np.array(L_FSS),
+             L_fss=np.array(L_fss),
              F_k_size=F_k_size,
              seg_mean=seg_means,
              seg_std=seg_stds,
